@@ -111,6 +111,11 @@ class CppHeaderParser(object):
         if npos >= 0:
             modlist.append("/C")
 
+        npos = arg_str.find("&&")
+        if npos >= 0:
+            arg_str = arg_str.replace("&&", '')
+            modlist.append("/RRef")
+
         npos = arg_str.find("&")
         if npos >= 0:
             modlist.append("/Ref")
@@ -255,6 +260,8 @@ class CppHeaderParser(object):
             l = l.replace("CV_EXPORTS_W_SIMPLE", "")
             modlist.append("/Simple")
         npos = l.find("CV_EXPORTS_AS")
+        if npos < 0:
+            npos = l.find('CV_WRAP_AS')
         if npos >= 0:
             macro_arg, npos3 = self.get_macro_arg(l, npos)
             modlist.append("=" + macro_arg)
@@ -658,6 +665,10 @@ class CppHeaderParser(object):
         stack_top = self.block_stack[-1]
         context = stack_top[self.BLOCK_TYPE]
 
+        if stmt.startswith('inline namespace'):
+            # emulate anonymous namespace
+            return "namespace", "", True, None
+
         stmt_type = ""
         if end_token == "{":
             stmt_type = "block"
@@ -715,6 +726,8 @@ class CppHeaderParser(object):
                     return stmt_type, classname, True, decl
 
             if stmt.startswith("enum") or stmt.startswith("namespace"):
+                # NB: Drop inheritance syntax for enum
+                stmt = stmt.split(':')[0]
                 stmt_list = stmt.rsplit(" ", 1)
                 if len(stmt_list) < 2:
                     stmt_list.append("<unnamed>")
@@ -812,6 +825,17 @@ class CppHeaderParser(object):
 
             l = l0.strip()
 
+            # G-API specific aliases
+            l = self.batch_replace(l, [
+                    ("GAPI_EXPORTS", "CV_EXPORTS"),
+                    ("GAPI_EXPORTS_W", "CV_EXPORTS_W"),
+                    ("GAPI_EXPORTS_W_SIMPLE","CV_EXPORTS_W_SIMPLE"),
+                    ("GAPI_WRAP", "CV_WRAP"),
+                    ("GAPI_PROP", "CV_PROP"),
+                    ("GAPI_PROP_RW", "CV_PROP_RW"),
+                    ('defined(GAPI_STANDALONE)', '0'),
+                ])
+
             if state == SCAN and l.startswith("#"):
                 state = DIRECTIVE
                 # fall through to the if state == DIRECTIVE check
@@ -821,7 +845,11 @@ class CppHeaderParser(object):
                     continue
                 state = SCAN
                 l = re.sub(r'//(.+)?', '', l).strip()  # drop // comment
-                if l == '#if 0' or l == '#if defined(__OPENCV_BUILD)' or l == '#ifdef __OPENCV_BUILD':
+                if l in [
+                    '#if 0',
+                    '#if defined(__OPENCV_BUILD)', '#ifdef __OPENCV_BUILD',
+                    '#if !defined(OPENCV_BINDING_PARSER)', '#ifndef OPENCV_BINDING_PARSER',
+                ]:
                     state = DIRECTIVE_IF_0
                     depth_if_0 = 1
                 continue
@@ -867,7 +895,12 @@ class CppHeaderParser(object):
                 sys.exit(-1)
 
             while 1:
-                token, pos = self.find_next_token(l, [";", "\"", "{", "}", "//", "/*"])
+                # NB: Avoid parsing '{' for case:
+                # foo(Obj&& = {});
+                if re.search(r'=\s*\{\s*\}', l):
+                    token, pos = ';', len(l)
+                else:
+                    token, pos = self.find_next_token(l, [";", "\"", "{", "}", "//", "/*"])
 
                 if not token:
                     block_head += " " + l
@@ -937,7 +970,9 @@ class CppHeaderParser(object):
                         else:
                             decls.append(decl)
 
-                            if self._generate_gpumat_decls and "cv.cuda" in decl[0]:
+                            if self._generate_gpumat_decls and ("cv.cuda" in decl[0] or decl[0] in [
+                                "cv.imshow", # https://github.com/opencv/opencv/issues/18553
+                            ]):
                                 # If function takes as one of arguments Mat or vector<Mat> - we want to create the
                                 # same declaration working with GpuMat
                                 args = decl[3]

@@ -31,7 +31,10 @@ public:
 
     virtual std::string getInputName(int idx) const CV_OVERRIDE
     {
-        return node->input(idx);
+        // If operation produces several tensors, they are specified by index
+        // after ':' character. In example, "input:0".
+        std::string name = node->input(idx);
+        return name.substr(0, name.rfind(':'));
     }
 
     virtual std::string getType() const CV_OVERRIDE
@@ -725,6 +728,21 @@ private:
     bool negativeScales;
 };
 
+class ClipByValueSubgraph : public TFSubgraph
+{
+public:
+    ClipByValueSubgraph()
+    {
+        int input = addNodeToMatch("");
+        int maxValue = addNodeToMatch("Const");
+        int minimum = addNodeToMatch("Minimum", input, maxValue);
+        int minValue = addNodeToMatch("Const");
+        addNodeToMatch("Maximum", minimum, minValue);
+
+        setFusedNode("ClipByValue", input, minValue, maxValue);
+    }
+};
+
 void simplifySubgraphs(tensorflow::GraphDef& net)
 {
     std::vector<Ptr<Subgraph> > subgraphs;
@@ -749,6 +767,7 @@ void simplifySubgraphs(tensorflow::GraphDef& net)
     subgraphs.push_back(Ptr<Subgraph>(new PReLUSubgraph(false)));
     subgraphs.push_back(Ptr<Subgraph>(new FlattenProdSubgraph()));
     subgraphs.push_back(Ptr<Subgraph>(new ResizeBilinearSubgraphDown()));
+    subgraphs.push_back(Ptr<Subgraph>(new ClipByValueSubgraph()));
 
     for (int i = 0; i < net.node_size(); ++i)
     {

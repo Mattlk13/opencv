@@ -1,9 +1,18 @@
 Using OpenCV with gcc and CMake {#tutorial_linux_gcc_cmake}
 ===============================
 
-@prev_tutorial{tutorial_linux_install}
+@prev_tutorial{tutorial_linux_gdb_pretty_printer}
 @next_tutorial{tutorial_linux_eclipse}
 
+|    |    |
+| -: | :- |
+| Original author | Ana Huamán |
+| Compatibility | OpenCV >= 3.0 |
+
+@tableofcontents
+
+@warning
+This tutorial can contain obsolete information.
 
 @note We assume that you have successfully installed OpenCV in your workstation.
 
@@ -35,7 +44,7 @@ int main(int argc, char** argv )
     }
 
     Mat image;
-    image = imread( argv[1], 1 );
+    image = imread( argv[1], IMREAD_COLOR );
 
     if ( !image.data )
     {
@@ -54,7 +63,7 @@ int main(int argc, char** argv )
 
 Now you have to create your CMakeLists.txt file. It should look like this:
 @code{.cmake}
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.5)
 project( DisplayImage )
 find_package( OpenCV REQUIRED )
 include_directories( ${OpenCV_INCLUDE_DIRS} )

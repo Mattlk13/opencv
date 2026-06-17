@@ -43,9 +43,6 @@
 
 namespace opencv_test { namespace {
 
-const string FEATURES2D_DIR = "features2d";
-const string IMAGE_FILENAME = "tsukuba.png";
-
 /****************************************************************************************\
 *                       Algorithmic tests for descriptor matchers                        *
 \****************************************************************************************/
@@ -582,6 +579,10 @@ TEST( Features2d_FlannBasedMatcher, read_write )
     "      type: 5\n"
     "      value: 4.\n"// this line is changed!
     "   -\n"
+    "      name: explore_all_trees\n"
+    "      type: 8\n"
+    "      value: 0\n"
+    "   -\n"
     "      name: sorted\n"
     "      type: 8\n"    // FLANN_INDEX_TYPE_BOOL
     "      value: 1\n";
@@ -603,7 +604,6 @@ TEST(Features2d_DMatch, issue_11855)
                                         1, 1, 1);
     Mat targets = (Mat_<uchar>(2, 3) << 1, 1, 1,
                                         0, 0, 0);
-
     Ptr<BFMatcher> bf = BFMatcher::create(NORM_HAMMING, true);
     vector<vector<DMatch> > match;
     bf->knnMatch(sources, targets, match, 1, noArray(), true);
@@ -613,6 +613,63 @@ TEST(Features2d_DMatch, issue_11855)
     EXPECT_EQ(1, match[0][0].queryIdx);
     EXPECT_EQ(0, match[0][0].trainIdx);
     EXPECT_EQ(0.0f, match[0][0].distance);
+}
+
+TEST(Features2d_DMatch, issue_17771)
+{
+    Mat sources = (Mat_<uchar>(2, 3) << 1, 1, 0,
+                                        1, 1, 1);
+    Mat targets = (Mat_<uchar>(2, 3) << 1, 1, 1,
+                                        0, 0, 0);
+    UMat usources = sources.getUMat(ACCESS_READ);
+    UMat utargets = targets.getUMat(ACCESS_READ);
+    vector<vector<DMatch> > match;
+    Ptr<BFMatcher> ubf = BFMatcher::create(NORM_HAMMING);
+    Mat mask = (Mat_<uchar>(2, 2) << 1, 0, 0, 1);
+    EXPECT_NO_THROW(ubf->knnMatch(usources, utargets, match, 1, mask, true));
+}
+
+// Verify that cross-check BFMatcher gives identical results via Mat (CPU) and UMat (OCL or CPU).
+// When OpenCL is active the UMat path exercises ocl_matchWithCrossCheck; when it is not,
+// both paths fall through to the same CPU code — either way the results must match.
+TEST(Features2d_BFMatcher_CrossCheck, ocl_matches_cpu)
+{
+    RNG rng(42);
+    const int nQuery = 200;
+    const int nTrain = 400;
+    const int dim    = 128;
+
+    // Float descriptors: the OCL dispatch in knnMatchImpl requires CV_32FC1
+    Mat queryMat(nQuery, dim, CV_32FC1);
+    Mat trainMat(nTrain, dim, CV_32FC1);
+    rng.fill(queryMat, RNG::UNIFORM, 0.f, 1.f);
+    rng.fill(trainMat, RNG::UNIFORM, 0.f, 1.f);
+
+    // CPU reference: Mat inputs always take the CPU path
+    Ptr<BFMatcher> cpuMatcher = BFMatcher::create(NORM_L2, true /*crossCheck*/);
+    vector<DMatch> cpuMatches;
+    cpuMatcher->match(queryMat, trainMat, cpuMatches);
+
+    // UMat path: activates OCL dispatch when OpenCL is available
+    UMat queryUMat = queryMat.getUMat(ACCESS_READ);
+    UMat trainUMat = trainMat.getUMat(ACCESS_READ);
+    Ptr<BFMatcher> oclMatcher = BFMatcher::create(NORM_L2, true /*crossCheck*/);
+    vector<DMatch> oclMatches;
+    oclMatcher->match(queryUMat, trainUMat, oclMatches);
+
+    // Both paths must return the same set of matches (order may differ)
+    ASSERT_EQ(cpuMatches.size(), oclMatches.size());
+
+    auto byQuery = [](const DMatch& a, const DMatch& b) { return a.queryIdx < b.queryIdx; };
+    sort(cpuMatches.begin(), cpuMatches.end(), byQuery);
+    sort(oclMatches.begin(), oclMatches.end(), byQuery);
+
+    for (size_t i = 0; i < cpuMatches.size(); ++i)
+    {
+        EXPECT_EQ(cpuMatches[i].queryIdx, oclMatches[i].queryIdx) << "at index " << i;
+        EXPECT_EQ(cpuMatches[i].trainIdx, oclMatches[i].trainIdx) << "at index " << i;
+        EXPECT_NEAR(cpuMatches[i].distance, oclMatches[i].distance, 1e-3f) << "at index " << i;
+    }
 }
 
 }} // namespace

@@ -5,8 +5,8 @@ if (WIN32 AND NOT ARM)
   message(FATAL_ERROR "BUILD_TBB option supports Windows on ARM only!\nUse regular official TBB build instead of the BUILD_TBB option!")
 endif()
 
-ocv_update(OPENCV_TBB_RELEASE "v2020.1")
-ocv_update(OPENCV_TBB_RELEASE_MD5 "734f335d06ee80a7d4a20cc0da734c59")
+ocv_update(OPENCV_TBB_RELEASE "v2022.1.0")
+ocv_update(OPENCV_TBB_RELEASE_MD5 "cce28e6cb1ceae14a93848990c98cb6b")
 ocv_update(OPENCV_TBB_FILENAME "${OPENCV_TBB_RELEASE}.tar.gz")
 string(REGEX REPLACE "^v" "" OPENCV_TBB_RELEASE_ "${OPENCV_TBB_RELEASE}")
 #ocv_update(OPENCV_TBB_SUBDIR ...)
@@ -17,7 +17,7 @@ ocv_download(FILENAME ${OPENCV_TBB_FILENAME}
              URL
                "${OPENCV_TBB_URL}"
                "$ENV{OPENCV_TBB_URL}"
-               "https://github.com/01org/tbb/archive/"
+               "https://github.com/oneapi-src/oneTBB/archive/refs/tags/"
              DESTINATION_DIR ${tbb_src_dir}
              ID TBB
              STATUS res
@@ -44,7 +44,6 @@ ocv_include_directories("${tbb_src_dir}/include"
 
 file(GLOB lib_srcs "${tbb_src_dir}/src/tbb/*.cpp")
 file(GLOB lib_hdrs "${tbb_src_dir}/src/tbb/*.h")
-list(APPEND lib_srcs "${tbb_src_dir}/src/rml/client/rml_tbb.cpp")
 ocv_list_filterout(lib_srcs "${tbb_src_dir}/src/tbb/tbbbind.cpp")  # hwloc.h requirement
 ocv_list_filterout(lib_srcs "${tbb_src_dir}/src/tbb/tbb_bind.cpp")  # hwloc.h requirement 2020.1+
 
@@ -100,15 +99,22 @@ ocv_warnings_disable(CMAKE_CXX_FLAGS
     -Wimplicit-fallthrough             # TBB 2018 under GCC 7+
     -Wmissing-prototypes               # MacOSX, Android/Clang
     -Wundef -Wmissing-declarations     # TBB 2019
+    -Wnon-virtual-dtor                 # oneTBB-2020.2 Android
+    -Wunused-but-set-variable          # oneTBB-2020.2 Android
 )
 
 set(TBB_SOURCE_FILES ${lib_srcs} ${lib_hdrs})
 
 set(tbb_version_file "version_string.ver")
+if(NOT BUILD_INFO_SKIP_SYSTEM_VERSION)
+  set(TBB_HOST_VERSION " ${CMAKE_HOST_SYSTEM_VERSION}")
+else()
+  set(TBB_HOST_VERSION "")
+endif()
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/${tbb_version_file}.cmakein" "${CMAKE_CURRENT_BINARY_DIR}/${tbb_version_file}" @ONLY)
 list(APPEND TBB_SOURCE_FILES "${CMAKE_CURRENT_BINARY_DIR}/${tbb_version_file}")
 
-add_library(tbb ${TBB_SOURCE_FILES})
+add_library(tbb ${OPENCV_3RDPARTY_EXCLUDE_FROM_ALL} ${TBB_SOURCE_FILES})
 target_compile_definitions(tbb PUBLIC
     TBB_USE_GCC_BUILTINS=1
     __TBB_GCC_BUILTIN_ATOMICS_PRESENT=1
@@ -165,8 +171,9 @@ ocv_install_target(tbb EXPORT OpenCVModules
     RUNTIME DESTINATION ${OPENCV_BIN_INSTALL_PATH} COMPONENT libs
     LIBRARY DESTINATION ${OPENCV_LIB_INSTALL_PATH} COMPONENT libs
     ARCHIVE DESTINATION ${OPENCV_3P_LIB_INSTALL_PATH} COMPONENT dev
+    OPTIONAL
     )
 
-ocv_install_3rdparty_licenses(tbb "${tbb_src_dir}/LICENSE" "${tbb_src_dir}/README")
+ocv_install_3rdparty_licenses(tbb "${tbb_src_dir}/LICENSE.txt" "${tbb_src_dir}/README.md")
 
-ocv_tbb_read_version("${tbb_src_dir}/include")
+ocv_tbb_read_version("${tbb_src_dir}/include" tbb)

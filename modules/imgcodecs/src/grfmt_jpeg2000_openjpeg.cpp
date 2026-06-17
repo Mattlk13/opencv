@@ -146,7 +146,7 @@ public:
         return (ptr_ - other.ptr_) / step_;
     }
 
-    /* Comparision */
+    /* Comparison */
     bool operator==(const ChannelsIterator<Traits>& other) const CV_NOEXCEPT
     {
         return ptr_ == other.ptr_;
@@ -327,24 +327,36 @@ opj_cparameters setupEncoderParameters(const std::vector<int>& params)
 {
     opj_cparameters parameters;
     opj_set_default_encoder_parameters(&parameters);
+    bool rate_is_specified = false;
     for (size_t i = 0; i < params.size(); i += 2)
     {
+        const int value = params[i + 1];
         switch (params[i])
         {
         case cv::IMWRITE_JPEG2000_COMPRESSION_X1000:
-            parameters.tcp_rates[0] = 1000.f / std::min(std::max(params[i + 1], 1), 1000);
+            {
+                const int compression = std::min(std::max(value, 1), 1000);
+                parameters.tcp_rates[0] = 1000.f / static_cast<float>(compression);
+                if(value != compression) {
+                    CV_LOG_WARNING(nullptr, cv::format("The value(%d) for IMWRITE_JPEG2000_COMPRESSION_X1000 must be between 1 to 1000. It is fallbacked to 1", value));
+                }
+                rate_is_specified = true;
+            }
             break;
         default:
-            CV_LOG_WARNING(NULL, "OpenJPEG2000(encoder): skip unsupported parameter: " << params[i]);
             break;
         }
     }
     parameters.tcp_numlayers = 1;
     parameters.cp_disto_alloc = 1;
+    if (!rate_is_specified)
+    {
+        parameters.tcp_rates[0] = 4;
+    }
     return parameters;
 }
 
-bool decodeSRGBData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift)
+bool decodeSRGBData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift, bool use_rgb)
 {
     using ImageComponents = std::vector<const OPJ_INT32*>;
 
@@ -371,8 +383,9 @@ bool decodeSRGBData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift)
 
     if (inChannels >= 3)
     {
+        int swap_rb = use_rgb ? 0 : 2;
         // Assume RGB (+ alpha) for 3 channels -> BGR
-        ImageComponents incomps { inImg.comps[2].data, inImg.comps[1].data, inImg.comps[0].data };
+        ImageComponents incomps { inImg.comps[swap_rb].data, inImg.comps[1].data, inImg.comps[swap_rb^2].data };
         // Assume RGBA for 4 channels -> BGRA
         if (outChannels > 3)
         {
@@ -387,7 +400,7 @@ bool decodeSRGBData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift)
     return false;
 }
 
-bool decodeGrayscaleData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift)
+bool decodeGrayscaleData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift, bool)
 {
     using ImageComponents = std::vector<const OPJ_INT32*>;
 
@@ -405,7 +418,7 @@ bool decodeGrayscaleData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shif
     return false;
 }
 
-bool decodeSYCCData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift)
+bool decodeSYCCData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift, bool use_rgb)
 {
     using ImageComponents = std::vector<const OPJ_INT32*>;
 
@@ -420,7 +433,10 @@ bool decodeSYCCData(const opj_image_t& inImg, cv::Mat& outImg, uint8_t shift)
     if (outChannels == 3 && inChannels >= 3) {
         copyToMat(ImageComponents { inImg.comps[0].data, inImg.comps[1].data, inImg.comps[2].data },
                   outImg, shift);
-        cvtColor(outImg, outImg, COLOR_YUV2BGR);
+        if (use_rgb)
+            cvtColor(outImg, outImg, COLOR_YUV2RGB);
+        else
+            cvtColor(outImg, outImg, COLOR_YUV2BGR);
         return true;
     }
 
@@ -489,20 +505,16 @@ detail::StreamPtr opjCreateBufferInputStream(detail::OpjMemoryBuffer* buf)
 
 /////////////////////// Jpeg2KOpjDecoder ///////////////////
 
-Jpeg2KOpjDecoder::Jpeg2KOpjDecoder()
+namespace detail {
+
+Jpeg2KOpjDecoderBase::Jpeg2KOpjDecoderBase(OPJ_CODEC_FORMAT format)
+    : format_(format)
 {
-    static const unsigned char signature[] = { 0, 0, 0, 0x0c, 'j', 'P', ' ', ' ', 13, 10, 0x87, 10 };
-    m_signature = String((const char*)(signature), sizeof(signature));
     m_buf_supported = true;
 }
 
 
-ImageDecoder Jpeg2KOpjDecoder::newDecoder() const
-{
-    return makePtr<Jpeg2KOpjDecoder>();
-}
-
-bool Jpeg2KOpjDecoder::readHeader()
+bool Jpeg2KOpjDecoderBase::readHeader()
 {
     if (!m_buf.empty()) {
         opjBuf_ = detail::OpjMemoryBuffer(m_buf);
@@ -515,7 +527,7 @@ bool Jpeg2KOpjDecoder::readHeader()
     if (!stream_)
         return false;
 
-    codec_.reset(opj_create_decompress(OPJ_CODEC_JP2));
+    codec_.reset(opj_create_decompress(format_));
     if (!codec_)
         return false;
 
@@ -543,7 +555,7 @@ bool Jpeg2KOpjDecoder::readHeader()
      */
     bool hasAlpha = false;
     const int numcomps = image_->numcomps;
-    CV_Assert(numcomps >= 1);
+    CV_Check(numcomps, numcomps >= 1 && numcomps <= 4, "Unsupported number of components");
     for (int i = 0; i < numcomps; i++)
     {
         const opj_image_comp_t& comp = image_->comps[i];
@@ -558,7 +570,7 @@ bool Jpeg2KOpjDecoder::readHeader()
             CV_Error(Error::StsNotImplemented, cv::format("OpenJPEG2000: Component %d/%d is duplicate alpha channel", i, numcomps));
         }
 
-        hasAlpha |= (bool)comp.alpha;
+        hasAlpha |= comp.alpha != 0;
 
         if (comp.prec > 64)
         {
@@ -581,9 +593,9 @@ bool Jpeg2KOpjDecoder::readHeader()
     return true;
 }
 
-bool Jpeg2KOpjDecoder::readData( Mat& img )
+bool Jpeg2KOpjDecoderBase::readData( Mat& img )
 {
-    using DecodeFunc = bool(*)(const opj_image_t&, cv::Mat&, uint8_t shift);
+    using DecodeFunc = bool(*)(const opj_image_t&, cv::Mat&, uint8_t shift, bool use_rgb);
 
     if (!opj_decode(codec_.get(), stream_.get(), image_.get()))
     {
@@ -600,7 +612,9 @@ bool Jpeg2KOpjDecoder::readData( Mat& img )
     switch (image_->color_space)
     {
     case OPJ_CLRSPC_UNKNOWN:
-        CV_LOG_WARNING(NULL, "OpenJPEG2000: Image has unknown color space, SRGB is assumed");
+        /* FALLTHRU */
+    case OPJ_CLRSPC_UNSPECIFIED:
+        CV_LOG_WARNING(NULL, "OpenJPEG2000: Image has unknown or unspecified color space, SRGB is assumed");
         /* FALLTHRU */
     case OPJ_CLRSPC_SRGB:
         decode = decodeSRGBData;
@@ -611,8 +625,6 @@ bool Jpeg2KOpjDecoder::readData( Mat& img )
     case OPJ_CLRSPC_SYCC:
         decode = decodeSYCCData;
         break;
-    case OPJ_CLRSPC_UNSPECIFIED:
-        CV_Error(Error::StsNotImplemented, "OpenJPEG2000: Image has unspecified color space");
     default:
         CV_Error(Error::StsNotImplemented,
                  cv::format("OpenJPEG2000: Unsupported color space conversion: %s -> %s",
@@ -628,15 +640,58 @@ bool Jpeg2KOpjDecoder::readData( Mat& img )
                  cv::format("OpenJPEG2000: output precision > 16 not supported: target depth %d", depth));
     }();
     const uint8_t shift = outPrec > m_maxPrec ? 0 : (uint8_t)(m_maxPrec - outPrec); // prec <= 64
-    return decode(*image_, img, shift);
+
+    const int inChannels = image_->numcomps;
+
+    CV_Assert(inChannels > 0);
+    CV_Assert(image_->comps);
+    for (int c = 0; c < inChannels; c++)
+    {
+        const opj_image_comp_t& comp = image_->comps[c];
+        CV_CheckEQ((int)comp.dx, 1, "OpenJPEG2000: tiles are not supported");
+        CV_CheckEQ((int)comp.dy, 1, "OpenJPEG2000: tiles are not supported");
+        CV_CheckEQ((int)comp.x0, 0, "OpenJPEG2000: tiles are not supported");
+        CV_CheckEQ((int)comp.y0, 0, "OpenJPEG2000: tiles are not supported");
+        CV_CheckEQ((int)comp.w, img.cols, "OpenJPEG2000: tiles are not supported");
+        CV_CheckEQ((int)comp.h, img.rows, "OpenJPEG2000: tiles are not supported");
+        CV_Assert(comp.data && "OpenJPEG2000: missing component data (unsupported / broken input)");
+    }
+
+    return decode(*image_, img, shift, m_use_rgb);
 }
 
+} // namespace detail
+
+Jpeg2KJP2OpjDecoder::Jpeg2KJP2OpjDecoder()
+    : Jpeg2KOpjDecoderBase(OPJ_CODEC_JP2)
+{
+    static const unsigned char JP2Signature[] = { 0, 0, 0, 0x0c, 'j', 'P', ' ', ' ', 13, 10, 0x87, 10 };
+    m_signature = String((const char*) JP2Signature, sizeof(JP2Signature));
+}
+
+ImageDecoder Jpeg2KJP2OpjDecoder::newDecoder() const
+{
+    return makePtr<Jpeg2KJP2OpjDecoder>();
+}
+
+Jpeg2KJ2KOpjDecoder::Jpeg2KJ2KOpjDecoder()
+    : Jpeg2KOpjDecoderBase(OPJ_CODEC_J2K)
+{
+    static const unsigned char J2KSignature[] = { 0xff, 0x4f, 0xff, 0x51 };
+    m_signature = String((const char*) J2KSignature, sizeof(J2KSignature));
+}
+
+ImageDecoder Jpeg2KJ2KOpjDecoder::newDecoder() const
+{
+    return makePtr<Jpeg2KJ2KOpjDecoder>();
+}
 
 /////////////////////// Jpeg2KOpjEncoder ///////////////////
 
 Jpeg2KOpjEncoder::Jpeg2KOpjEncoder()
 {
     m_description = "JPEG-2000 files (*.jp2)";
+    m_supported_encode_key = {IMWRITE_JPEG2000_COMPRESSION_X1000};
 }
 
 ImageEncoder Jpeg2KOpjEncoder::newEncoder() const

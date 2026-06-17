@@ -11,9 +11,12 @@
 #define __OPENCV_GAPI_TEST_PRECOMP_HPP__
 
 #include <cstdint>
+#include <thread>
 #include <vector>
 
 #include <opencv2/ts.hpp>
+
+#include <opencv2/core/utils/configuration.private.hpp>
 
 #include <opencv2/gapi.hpp>
 #include <opencv2/gapi/core.hpp>
@@ -33,5 +36,8 @@ namespace cv {
 static inline void countNonZero_is_forbidden_in_tests_use_norm_instead() {}
 }
 #define countNonZero() countNonZero_is_forbidden_in_tests_use_norm_instead()
+
+#undef RAND_MAX
+#define RAND_MAX RAND_MAX_is_banned_in_tests__use_cv_theRNG_instead
 
 #endif // __OPENCV_GAPI_TEST_PRECOMP_HPP__
